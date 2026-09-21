@@ -1,0 +1,722 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & messaging
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  PAUSED
+  SUSPENDED
+  DELETED
+}
+
+enum ConnectionIntentType {
+  DATING
+  MARRIAGE
+  FRIENDSHIP
+  MEANINGFUL_CONNECTION
+  UNSURE
+  OTHER
+}
+
+model User {
+  id          String     @id @default(cuid())
+  displayName String?
+  status      UserStatus @default(ACTIVE)
+  isDemo      Boolean    @default(false)
+  isAdmin     Boolean    @default(false)
+
+  // Coarse matchable identity facts, confirmed by the user through the Agent.
+  ageYears   Int?
+  city       String?
+  timezone   String?
+  languages  String[] @default([])
+  bio        String?
+
+  connectionsPausedAt DateTime?
+  verifiedAt          DateTime?
+  poolEligibleAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messagingIdentities MessagingIdentity[]
+  conversations       Conversation[]
+  relationshipProfile RelationshipProfile?
+  relationshipSignals RelationshipSignal[]
+  preferences         Preference[]
+  connectionIntents   ConnectionIntent[]
+  learningEvents      PreferenceLearningEvent[]
+  learnedPreferences  LearnedPreference[]
+  corrections         PreferenceCorrection[]
+  verifications       Verification[]
+  recommendations     Recommendation[]        @relation("RecommendationSubject")
+  candidateFor        Recommendation[]        @relation("RecommendationCandidate")
+  interests           Interest[]
+  consents            ConsentRecord[]
+  availabilities      Availability[]
+  videoFeedback       VideoFeedback[]
+  contactMethods      ContactMethod[]
+  contactConsents     ContactExchangeConsent[]
+  blocksMade          UserBlock[]             @relation("Blocker")
+  blocksReceived      UserBlock[]             @relation("Blocked")
+  reportsMade         SafetyReport[]          @relation("Reporter")
+  reportsReceived     SafetyReport[]          @relation("Reported")
+  videoGrants         VideoAccessGrant[]
+  connectionsA        Connection[]            @relation("ConnectionUserA")
+  connectionsB        Connection[]            @relation("ConnectionUserB")
+}
+
+enum MessagingProviderKind {
+  PHOTON
+  MOCK
+  WEB_FALLBACK
+}
+
+enum MessagingChannel {
+  IMESSAGE
+  SMS
+  WEB
+}
+
+model MessagingIdentity {
+  id         String                @id @default(cuid())
+  userId     String
+  provider   MessagingProviderKind
+  channel    MessagingChannel
+  externalId String
+  verifiedAt DateTime?
+  createdAt  DateTime              @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalId])
+  @@index([userId])
+}
+
+model Conversation {
+  id                     String                @id @default(cuid())
+  userId                 String
+  provider               MessagingProviderKind
+  channel                MessagingChannel
+  externalConversationId String
+  lastMessageAt          DateTime?
+  createdAt              DateTime              @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@unique([provider, externalConversationId])
+  @@index([userId])
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  MEDIA
+  SYSTEM
+}
+
+model Message {
+  id                String                @id @default(cuid())
+  conversationId    String
+  direction         MessageDirection
+  type              MessageType           @default(TEXT)
+  text              String?
+  mediaUrl          String?
+  provider          MessagingProviderKind
+  externalMessageId String?
+  contentHash       String?
+  receivedAt        DateTime
+  createdAt         DateTime              @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalMessageId])
+  @@index([conversationId, receivedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Durable inbox / outbox
+// ---------------------------------------------------------------------------
+
+enum JobStatus {
+  PENDING
+  LEASED
+  DONE
+  FAILED
+  NEEDS_RECONCILIATION
+}
+
+model AgentJob {
+  id             String    @id @default(cuid())
+  dedupeKey      String    @unique
+  userId         String?
+  conversationId String?
+  messageId      String?
+  status         JobStatus @default(PENDING)
+  attempts       Int       @default(0)
+  leaseExpiresAt DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model OutboxMessage {
+  id             String    @id @default(cuid())
+  dedupeKey      String    @unique
+  conversationId String
+  text           String
+  status         JobStatus @default(PENDING)
+  attempts       Int       @default(0)
+  leaseExpiresAt DateTime?
+  providerRef    String?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model WebhookReceipt {
+  id                String                @id @default(cuid())
+  provider          MessagingProviderKind
+  externalMessageId String
+  payloadHash       String
+  receivedAt        DateTime              @default(now())
+
+  @@unique([provider, externalMessageId])
+}
+
+// ---------------------------------------------------------------------------
+// Relationship intelligence
+// ---------------------------------------------------------------------------
+
+model RelationshipProfile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  summary   String?
+  version   Int      @default(1)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum SignalSource {
+  USER_STATED
+  BEHAVIORAL
+  AI_INFERENCE
+}
+
+enum ReviewStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+  UNSURE
+}
+
+model RelationshipSignal {
+  id              String       @id @default(cuid())
+  userId          String
+  category        String
+  key             String
+  value           String
+  source          SignalSource
+  sourceMessageId String?
+  evidenceQuote   String?
+  confidence      Float        @default(0.5)
+  userConfirmed   Boolean      @default(false)
+  matchable       Boolean      @default(false)
+  reviewStatus    ReviewStatus @default(PENDING)
+  supersededAt    DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, category, key])
+}
+
+model Preference {
+  id          String   @id @default(cuid())
+  userId      String
+  category    String
+  key         String
+  value       String
+  isHardFilter Boolean @default(false)
+  statedAt    DateTime @default(now())
+  supersededAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, category, key])
+}
+
+model AIInference {
+  id         String   @id @default(cuid())
+  userId     String
+  statement  String
+  confidence Float    @default(0.3)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model ConnectionIntent {
+  id        String               @id @default(cuid())
+  userId    String
+  intent    ConnectionIntentType
+  note      String?
+  activeAt  DateTime             @default(now())
+  endedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Preference learning
+// ---------------------------------------------------------------------------
+
+enum LearningEventType {
+  INTERESTED
+  NOT_INTERESTED
+  LATER
+  NO_RESPONSE
+  VIDEO_ACCEPTED
+  VIDEO_DECLINED
+  VIDEO_COMPLETED
+  WANT_TO_CONTINUE
+  UNCOMFORTABLE
+  CONTACT_EXCHANGE
+  CONTACT_DECLINED
+  OFFLINE_MEETING
+  SECOND_MEETING
+  ONGOING_CONNECTION
+  USER_CORRECTION
+}
+
+enum SignalDirection {
+  POSITIVE
+  NEGATIVE
+  NEUTRAL
+}
+
+enum LearningStage {
+  RECOMMENDATION
+  INTEREST
+  VIDEO
+  POST_VIDEO
+  CONTACT_EXCHANGE
+  OFFLINE
+}
+
+model PreferenceLearningEvent {
+  id               String @id @default(cuid())
+  userId           String
+  candidateUserId  String?
+  recommendationId String?
+  connectionId     String?
+
+  sourceEventId   String            @unique
+  eventType       LearningEventType
+  signalDirection SignalDirection
+  stage           LearningStage
+
+  explicitFeedback          String?
+  derivedSignals            Json?
+  candidateAttributeSnapshot Json?
+  exposureContext           Json?
+  evidenceGroupKey          String
+
+  confidence    Float  @default(0.3)
+  weight        Float  @default(1)
+  policyVersion String @default("v1")
+
+  occurredAt    DateTime
+  createdAt     DateTime  @default(now())
+  invalidatedAt DateTime?
+
+  user     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  evidence PreferenceEvidence[]
+
+  @@index([userId, occurredAt])
+  @@index([evidenceGroupKey])
+}
+
+enum LearnedPreferenceStatus {
+  OBSERVING
+  CONFIRMED
+  REJECTED
+  UNSURE
+  SUPERSEDED
+}
+
+model LearnedPreference {
+  id       String @id @default(cuid())
+  userId   String
+  category String
+  key      String
+  value    String
+
+  confidence               Float @default(0.2)
+  positiveEvidenceCount    Int   @default(0)
+  negativeEvidenceCount    Int   @default(0)
+  independentEvidenceCount Int   @default(0)
+
+  source        SignalSource            @default(BEHAVIORAL)
+  status        LearnedPreferenceStatus @default(OBSERVING)
+  policyVersion String                  @default("v1")
+  version       Int                     @default(1)
+  lastUpdatedAt DateTime                @updatedAt
+  createdAt     DateTime                @default(now())
+
+  user        User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  evidence    PreferenceEvidence[]
+  corrections PreferenceCorrection[]
+
+  @@unique([userId, category, key, value])
+  @@index([userId, status])
+}
+
+model PreferenceEvidence {
+  id                  String  @id @default(cuid())
+  learnedPreferenceId String
+  learningEventId     String
+  supports            Boolean
+  rationale           String
+  contribution        Float
+  dedupeKey           String
+
+  createdAt DateTime @default(now())
+
+  learnedPreference LearnedPreference       @relation(fields: [learnedPreferenceId], references: [id], onDelete: Cascade)
+  learningEvent     PreferenceLearningEvent @relation(fields: [learningEventId], references: [id], onDelete: Cascade)
+
+  @@unique([learnedPreferenceId, dedupeKey])
+}
+
+enum CorrectionType {
+  CONFIRM
+  REJECT
+  UNSURE
+}
+
+model PreferenceCorrection {
+  id                  String         @id @default(cuid())
+  userId              String
+  learnedPreferenceId String
+  correction          CorrectionType
+  note                String?
+  confidenceBefore    Float
+  confidenceAfter     Float
+  targetVersion       Int
+  idempotencyKey      String         @unique
+  createdAt           DateTime       @default(now())
+
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learnedPreference LearnedPreference @relation(fields: [learnedPreferenceId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Verification, recommendation, connection
+// ---------------------------------------------------------------------------
+
+enum VerificationStatus {
+  PENDING
+  PASSED
+  FAILED
+  EXPIRED
+}
+
+model Verification {
+  id          String             @id @default(cuid())
+  userId      String
+  provider    String
+  isMock      Boolean            @default(true)
+  status      VerificationStatus @default(PENDING)
+  tokenHash   String?            @unique
+  expiresAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Recommendation {
+  id              String   @id @default(cuid())
+  userId          String
+  candidateUserId String
+  score           Float
+  reason          String
+  policyVersion   String   @default("v1")
+  exposureContext Json?
+  presentedAt     DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime @default(now())
+
+  user      User       @relation("RecommendationSubject", fields: [userId], references: [id], onDelete: Cascade)
+  candidate User       @relation("RecommendationCandidate", fields: [candidateUserId], references: [id], onDelete: Cascade)
+  interests Interest[]
+
+  @@unique([userId, candidateUserId])
+  @@index([userId, createdAt])
+}
+
+enum InterestState {
+  INTERESTED
+  NOT_INTERESTED
+  LATER
+  UNKNOWN
+}
+
+model Interest {
+  id               String        @id @default(cuid())
+  recommendationId String
+  userId           String
+  targetUserId     String
+  state            InterestState @default(UNKNOWN)
+  privateReason    String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  recommendation Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, targetUserId])
+  @@index([targetUserId])
+}
+
+enum ConnectionStatus {
+  MUTUAL_INTEREST
+  VIDEO_SCHEDULED
+  VIDEO_COMPLETED
+  CONTACT_EXCHANGED
+  CLOSED
+}
+
+model Connection {
+  id        String           @id @default(cuid())
+  userAId   String
+  userBId   String
+  status    ConnectionStatus @default(MUTUAL_INTEREST)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  userA User @relation("ConnectionUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("ConnectionUserB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  videoSessions    VideoSession[]
+  contactConsents  ContactExchangeConsent[]
+  availabilities   Availability[]
+
+  @@unique([userAId, userBId])
+}
+
+model Availability {
+  id           String   @id @default(cuid())
+  userId       String
+  connectionId String
+  startAt      DateTime
+  endAt        DateTime
+  timezone     String
+  createdAt    DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId])
+}
+
+// ---------------------------------------------------------------------------
+// Video
+// ---------------------------------------------------------------------------
+
+enum VideoSessionStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+model VideoSession {
+  id            String             @id @default(cuid())
+  connectionId  String
+  provider      String             @default("mock")
+  scheduledAt   DateTime
+  durationMins  Int                @default(20)
+  status        VideoSessionStatus @default(SCHEDULED)
+  completedAt   DateTime?
+  createdAt     DateTime           @default(now())
+
+  connection Connection         @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  grants     VideoAccessGrant[]
+  feedback   VideoFeedback[]
+
+  @@index([connectionId])
+}
+
+model VideoAccessGrant {
+  id             String    @id @default(cuid())
+  videoSessionId String
+  userId         String
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  redeemedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  videoSession VideoSession @relation(fields: [videoSessionId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([videoSessionId, userId])
+}
+
+enum ContinueAnswer {
+  YES
+  MAYBE
+  NO
+}
+
+enum ComfortAnswer {
+  NATURAL
+  NEUTRAL
+  UNCOMFORTABLE
+}
+
+model VideoFeedback {
+  id             String         @id @default(cuid())
+  videoSessionId String
+  userId         String
+  wantContinue   ContinueAnswer
+  comfort        ComfortAnswer
+  keepSearching  Boolean        @default(true)
+  note           String?
+  createdAt      DateTime       @default(now())
+
+  videoSession VideoSession @relation(fields: [videoSessionId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([videoSessionId, userId])
+}
+
+// ---------------------------------------------------------------------------
+// Contact exchange, consent, safety
+// ---------------------------------------------------------------------------
+
+enum ContactMethodKind {
+  WECHAT
+  PHONE
+  OTHER
+}
+
+model ContactMethod {
+  id        String            @id @default(cuid())
+  userId    String
+  kind      ContactMethodKind
+  value     String
+  version   Int               @default(1)
+  createdAt DateTime          @default(now())
+
+  user             User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exchangeConsents ContactExchangeConsent[]
+
+  @@index([userId])
+}
+
+model ContactExchangeConsent {
+  id              String   @id @default(cuid())
+  connectionId    String
+  userId          String
+  contactMethodId String
+  methodVersion   Int
+  grantedAt       DateTime @default(now())
+  revokedAt       DateTime?
+  exchangedAt     DateTime?
+
+  connection    Connection    @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactMethod ContactMethod @relation(fields: [contactMethodId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, userId])
+}
+
+enum ConsentScope {
+  SERVICE_USAGE
+  MATCHING_DATA
+  AI_IMPROVEMENT
+  THIRD_PARTY_PROCESSING
+}
+
+model ConsentRecord {
+  id        String       @id @default(cuid())
+  userId    String
+  scope     ConsentScope
+  granted   Boolean
+  source    String
+  createdAt DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, scope])
+}
+
+model UserBlock {
+  id        String   @id @default(cuid())
+  blockerId String
+  blockedId String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+}
+
+model SafetyReport {
+  id             String   @id @default(cuid())
+  reporterId     String
+  reportedUserId String
+  category       String
+  detail         String?
+  resolvedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  reporter User @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reported User @relation("Reported", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([reportedUserId])
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actor      String
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([targetType, targetId])
+}
