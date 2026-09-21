@@ -4,6 +4,7 @@ import { generateToken, sha256 } from "@/modules/shared/crypto";
 import { AuthorizationError, DomainError } from "@/modules/shared/errors";
 import { videoProvider } from "@/modules/providers/video";
 import { recordLearningEvent } from "@/modules/learning/service";
+import { enqueueOutbound } from "@/modules/messaging/outbox";
 
 export const VIDEO_DURATION_MINUTES = 20;
 /** The link dies shortly after the call it was issued for. */
@@ -373,6 +374,33 @@ export async function revokeGrant(videoSessionId: string, userId: string): Promi
   });
 }
 
+export const FEEDBACK_PROMPT = [
+  "That's the 20 minutes. Three quick things, and none of it goes to them:",
+  "Would you still like to get to know them? (yes / maybe / no)",
+  "How did the conversation feel \u2014 natural, neutral, or uncomfortable?",
+  "And should I keep looking for other people in the meantime?",
+].join("\n\n");
+
+/** Each side is asked on its own thread; nobody answers in front of the other. */
+async function askForFeedback(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const user = await tx.user.findUnique({ where: { id: userId } });
+  if (!user || user.isDemo) return;
+  const conversation = await tx.conversation.findFirst({
+    where: { userId },
+    orderBy: { lastMessageAt: "desc" },
+  });
+  if (!conversation) return;
+  await enqueueOutbound(tx, {
+    conversationId: conversation.id,
+    text: FEEDBACK_PROMPT,
+    dedupeKey: `video-feedback-prompt:${sessionId}:${userId}`,
+  });
+}
+
 /** Leaving the room ends the call for both sides and opens the feedback step. */
 export async function completeVideo(sessionId: string): Promise<void> {
   const session = await prisma.videoSession.findUnique({
@@ -408,6 +436,7 @@ export async function completeVideo(sessionId: string): Promise<void> {
         stage: "VIDEO",
         evidenceGroupKey: `${userId}:${counterpartId(session.connection, userId)}`,
       });
+      await askForFeedback(tx, session.id, userId);
     }
   });
 }

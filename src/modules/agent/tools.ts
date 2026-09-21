@@ -441,7 +441,7 @@ const tools: RegisteredTool[] = [
       return {
         ok: true,
         data: {
-          agentText: `Got it. I'm holding your ${args.kind.toLowerCase()} and I won't share it until you tell me to, for one specific person.`,
+          agentText: `Got it. I'm holding your ${args.kind.toLowerCase()} and nothing happens with it yet. When you want me to pass it to this one person, tell me to exchange contacts \u2014 and they have to say the same.`,
           contactMethodId: method.id,
         },
         message: `Contact method ${args.kind} v${method.version} stored`,

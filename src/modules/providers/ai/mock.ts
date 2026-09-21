@@ -186,9 +186,11 @@ export class MockAIProvider implements AIProvider {
           : { kind: "PHONE", value: (contact[3] ?? "").trim() },
       });
     }
+    // Handing over a contact detail is not permission to pass it on; consent
+    // has to be its own sentence.
     if (/(先不换|暂时不换|不交换联系方式|not yet)/i.test(text)) {
       toolCalls.push({ name: "decline_contact_exchange", args: {} });
-    } else if (/(同意交换|交换联系方式|可以给他|可以给她|exchange contact)/i.test(text) || contact) {
+    } else if (/(同意交换|交换联系方式|可以给他|可以给她|exchange contact)/i.test(text)) {
       toolCalls.push({ name: "consent_contact_exchange", args: {} });
     }
 

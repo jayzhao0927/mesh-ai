@@ -11,6 +11,7 @@ import {
   shareAvailability,
 } from "@/modules/video/service";
 import { myFeedback, submitVideoFeedback } from "@/modules/video/feedback";
+import { MockAIProvider } from "@/modules/providers/ai/mock";
 import {
   declineContactExchange,
   grantContactExchange,
@@ -167,6 +168,30 @@ describe("post-video feedback", () => {
     });
     expect(event.signalDirection).toBe("NEUTRAL");
     expect(event.weight).toBe(0);
+  });
+
+  it("asks each side for feedback once the call is over", async () => {
+    const { booked, a, b } = await scheduled();
+    const conversations = await Promise.all(
+      [a, b].map((user, i) =>
+        prisma.conversation.create({
+          data: {
+            userId: user.id,
+            provider: "MOCK",
+            channel: "SMS",
+            externalConversationId: `conv-${booked.session.id}-${i}`,
+          },
+        }),
+      ),
+    );
+    await completeVideo(booked.session.id);
+    await completeVideo(booked.session.id);
+
+    const queued = await prisma.outboxMessage.findMany({
+      where: { conversationId: { in: conversations.map((c) => c.id) } },
+    });
+    expect(queued).toHaveLength(2);
+    expect(queued[0].text).toMatch(/none of it goes to them/);
   });
 
   it("keeps each answer private to the person who gave it", async () => {
@@ -342,6 +367,17 @@ describe("contact exchange", () => {
         contactMethodId: theirs.id,
       }),
     ).rejects.toThrow(/Not authorized/);
+  });
+
+  it("does not read handing over a contact detail as permission to share it", async () => {
+    const turn = await new MockAIProvider().respond({
+      message: "wechat: qa_demo_0921",
+      recentTurns: [{ role: "user", text: "hi" }],
+      knownFacts: [],
+    });
+    const called = turn.toolCalls.map((c) => c.name);
+    expect(called).toContain("set_contact_method");
+    expect(called).not.toContain("consent_contact_exchange");
   });
 
   it("records declining as neutral, not as a verdict on the person", async () => {
