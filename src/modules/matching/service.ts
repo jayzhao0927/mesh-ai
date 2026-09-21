@@ -2,6 +2,7 @@ import type { Prisma, Recommendation } from "@prisma/client";
 import { prisma } from "@/modules/shared/db";
 import { env } from "@/config/env";
 import { DomainError } from "@/modules/shared/errors";
+import { rankableLearnedPreferences, recordLearningEvent } from "@/modules/learning/service";
 import { passesHardFilters, type FilterSubject } from "./filters";
 import { scorePair, SCORING_POLICY_VERSION, type ScoringSubject } from "./scoring";
 
@@ -11,7 +12,7 @@ type Subject = FilterSubject & ScoringSubject;
 async function loadSubject(userId: string): Promise<Subject | null> {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return null;
-  const [intent, hardFilters, signals] = await Promise.all([
+  const [intent, hardFilters, signals, learned] = await Promise.all([
     prisma.connectionIntent.findFirst({
       where: { userId, endedAt: null },
       orderBy: { activeAt: "desc" },
@@ -22,8 +23,9 @@ async function loadSubject(userId: string): Promise<Subject | null> {
     prisma.relationshipSignal.findMany({
       where: { userId, matchable: true, reviewStatus: "CONFIRMED", supersededAt: null },
     }),
+    rankableLearnedPreferences(userId),
   ]);
-  return { user, intent: intent?.intent ?? null, hardFilters, signals };
+  return { user, intent: intent?.intent ?? null, hardFilters, signals, learned };
 }
 
 async function loadCandidates(subject: Subject): Promise<Subject[]> {
@@ -108,6 +110,7 @@ export async function nextRecommendation(userId: string): Promise<Recommendation
       exposureContext: {
         components: best.components,
         candidateIsDemo: best.candidate.user.isDemo,
+        learnedPreferenceIds: best.learnedPreferenceIds,
       },
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     },
@@ -195,11 +198,23 @@ export async function respondToRecommendation(params: {
       },
     });
 
+    // Behaviour is stored as evidence, never as a conclusion. "Later" stays
+    // neutral on purpose: not answering yet says nothing about the person shown.
     await recordLearningEvent(tx, {
       userId: params.userId,
       candidateUserId: recommendation.candidateUserId,
       recommendationId: recommendation.id,
-      state: params.state,
+      sourceEventId: `interest:${recommendation.id}:${params.state}`,
+      eventType: params.state,
+      signalDirection:
+        params.state === "INTERESTED"
+          ? "POSITIVE"
+          : params.state === "NOT_INTERESTED"
+            ? "NEGATIVE"
+            : "NEUTRAL",
+      stage: "RECOMMENDATION",
+      explicitFeedback: params.privateReason,
+      evidenceGroupKey: `${params.userId}:${recommendation.candidateUserId}`,
     });
 
     if (params.state !== "INTERESTED") {
@@ -267,48 +282,6 @@ async function simulateDemoAnswer(
       userId: demoUserId,
       targetUserId,
       state: score >= 0.5 ? "INTERESTED" : "NOT_INTERESTED",
-    },
-  });
-}
-
-/**
- * Behaviour is stored as evidence, never as a conclusion. "Later" is neutral
- * on purpose: not answering yet says nothing about the person shown.
- */
-async function recordLearningEvent(
-  tx: Prisma.TransactionClient,
-  params: {
-    userId: string;
-    candidateUserId: string;
-    recommendationId: string;
-    state: "INTERESTED" | "NOT_INTERESTED" | "LATER";
-  },
-): Promise<void> {
-  const candidate = await tx.user.findUnique({ where: { id: params.candidateUserId } });
-  const direction =
-    params.state === "INTERESTED"
-      ? "POSITIVE"
-      : params.state === "NOT_INTERESTED"
-        ? "NEGATIVE"
-        : "NEUTRAL";
-  await tx.preferenceLearningEvent.upsert({
-    where: { sourceEventId: `interest:${params.recommendationId}:${params.state}` },
-    update: {},
-    create: {
-      userId: params.userId,
-      candidateUserId: params.candidateUserId,
-      recommendationId: params.recommendationId,
-      sourceEventId: `interest:${params.recommendationId}:${params.state}`,
-      eventType: params.state,
-      signalDirection: direction,
-      stage: "RECOMMENDATION",
-      candidateAttributeSnapshot: candidate
-        ? { city: candidate.city, ageYears: candidate.ageYears, languages: candidate.languages }
-        : undefined,
-      evidenceGroupKey: `${params.userId}:${params.candidateUserId}`,
-      confidence: 0.3,
-      weight: direction === "NEUTRAL" ? 0 : 1,
-      occurredAt: new Date(),
     },
   });
 }
