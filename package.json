@@ -11,7 +11,8 @@
     "worker": "tsx scripts/worker.ts",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "pretest": "DATABASE_URL=$TEST_DATABASE_URL prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "pretest": "tsx scripts/migrate-test-db.ts",
     "test": "vitest run"
   },
   "dependencies": {

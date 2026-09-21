@@ -70,10 +70,53 @@ async function transcript(externalId: string) {
     },
     include: { messages: { orderBy: { receivedAt: "asc" }, take: 100 } },
   });
-  if (!conversation) return { messages: [], pending: [], userId: null };
+  if (!conversation) return { messages: [], pending: [], userId: null, status: null };
+
+  const [user, intent, connections] = await Promise.all([
+    prisma.user.findUnique({ where: { id: conversation.userId } }),
+    prisma.connectionIntent.findFirst({
+      where: { userId: conversation.userId, endedAt: null },
+      orderBy: { activeAt: "desc" },
+    }),
+    prisma.connection.findMany({
+      where: {
+        OR: [{ userAId: conversation.userId }, { userBId: conversation.userId }],
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+
+  const others = await prisma.user.findMany({
+    where: {
+      id: {
+        in: connections.map((c) =>
+          c.userAId === conversation.userId ? c.userBId : c.userAId,
+        ),
+      },
+    },
+    select: { id: true, displayName: true },
+  });
 
   return {
     userId: conversation.userId,
+    status: user
+      ? {
+          state: user.status,
+          verified: Boolean(user.verifiedAt),
+          poolEligible: Boolean(user.poolEligibleAt),
+          city: user.city,
+          ageYears: user.ageYears,
+          intent: intent?.intent ?? null,
+        }
+      : null,
+    connections: connections.map((c) => {
+      const otherId = c.userAId === conversation.userId ? c.userBId : c.userAId;
+      return {
+        id: c.id,
+        status: c.status,
+        withName: others.find((o) => o.id === otherId)?.displayName ?? otherId,
+      };
+    }),
     messages: conversation.messages.map((m) => ({
       id: m.id,
       direction: m.direction,

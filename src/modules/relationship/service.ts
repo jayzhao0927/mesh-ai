@@ -46,12 +46,56 @@ export async function recordProposedSignals(
   return stored;
 }
 
+/**
+ * Confirmation is the only path from hypothesis to matchable fact. Confirmed
+ * identity facts also land on the user record, and confirmed boundaries become
+ * hard filters that outrank any later inference.
+ */
 export async function confirmSignal(userId: string, signalId: string) {
   const signal = await prisma.relationshipSignal.findUnique({ where: { id: signalId } });
   if (!signal || signal.userId !== userId) return null;
-  return prisma.relationshipSignal.update({
-    where: { id: signalId },
-    data: { reviewStatus: "CONFIRMED", userConfirmed: true, matchable: true },
+
+  return prisma.$transaction(async (tx) => {
+    const confirmed = await tx.relationshipSignal.update({
+      where: { id: signalId },
+      data: { reviewStatus: "CONFIRMED", userConfirmed: true, matchable: true },
+    });
+
+    if (signal.category === "identity") {
+      if (signal.key === "age" && /^\d{1,3}$/.test(signal.value)) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { ageYears: Number(signal.value) },
+        });
+      }
+      if (signal.key === "city") {
+        await tx.user.update({ where: { id: userId }, data: { city: signal.value } });
+      }
+    }
+
+    if (signal.category === "boundary") {
+      const existing = await tx.preference.findFirst({
+        where: { userId, category: signal.category, key: signal.key, supersededAt: null },
+      });
+      if (existing) {
+        await tx.preference.update({
+          where: { id: existing.id },
+          data: { value: signal.value, isHardFilter: true },
+        });
+      } else {
+        await tx.preference.create({
+          data: {
+            userId,
+            category: signal.category,
+            key: signal.key,
+            value: signal.value,
+            isHardFilter: true,
+          },
+        });
+      }
+    }
+
+    return confirmed;
   });
 }
 

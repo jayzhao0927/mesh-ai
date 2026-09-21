@@ -57,10 +57,16 @@ export async function handleInboundMessage(params: {
   });
 
   const toolResults: TurnResult["toolResults"] = [];
+  const toolTexts: string[] = [];
   for (const call of output.toolCalls) {
     const result = await runTool({ userId: params.userId }, call.name, call.args);
     toolResults.push({ name: call.name, ok: result.ok, message: result.message });
+    const text = agentTextOf(result.data);
+    if (text) toolTexts.push(text);
   }
+
+  // What actually happened in the domain outranks whatever the model drafted.
+  const reply = toolTexts.length > 0 ? toolTexts.join("\n\n") : output.reply;
 
   const signalsRecorded = await prisma.$transaction(async (tx) => {
     const count = await recordProposedSignals(
@@ -69,15 +75,23 @@ export async function handleInboundMessage(params: {
       params.messageId,
       output.proposedSignals,
     );
-    if (output.reply) {
+    if (reply) {
       await enqueueOutbound(tx, {
         conversationId: params.conversationId,
-        text: output.reply,
+        text: reply,
         dedupeKey: `reply:${params.jobId}`,
       });
     }
     return count;
   });
 
-  return { reply: output.reply, signalsRecorded, toolResults };
+  return { reply, signalsRecorded, toolResults };
+}
+
+function agentTextOf(data: unknown): string | null {
+  if (data && typeof data === "object" && "agentText" in data) {
+    const value = (data as { agentText: unknown }).agentText;
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
 }

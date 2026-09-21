@@ -16,6 +16,11 @@ const schema = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true"),
+  /** Whether real users may be introduced to seeded demo profiles. */
+  MATCH_WITH_DEMO_USERS: z
+    .string()
+    .default("true")
+    .transform((v) => v === "true"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

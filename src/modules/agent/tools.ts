@@ -2,7 +2,13 @@ import { z } from "zod";
 import { ConnectionIntentType } from "@prisma/client";
 import { prisma } from "@/modules/shared/db";
 import { AuthorizationError, DomainError } from "@/modules/shared/errors";
-import { confirmedFacts, pendingSignals } from "@/modules/relationship/service";
+import { confirmSignal, confirmedFacts, pendingSignals } from "@/modules/relationship/service";
+import {
+  introductionText,
+  nextRecommendation,
+  openRecommendation,
+  respondToRecommendation,
+} from "@/modules/matching/service";
 
 export interface ToolContext {
   /** Bound by the server from the resolved messaging identity, never by the model. */
@@ -115,11 +121,86 @@ const tools: RegisteredTool[] = [
       });
       if (!signal) throw new DomainError("Signal not found", "NOT_FOUND", 404);
       if (signal.userId !== ctx.userId) throw new AuthorizationError();
-      await prisma.relationshipSignal.update({
-        where: { id: args.signalId },
-        data: { reviewStatus: "CONFIRMED", userConfirmed: true, matchable: true },
-      });
+      await confirmSignal(ctx.userId, args.signalId);
       return { ok: true, message: "Signal confirmed" };
+    },
+  }),
+  tool({
+    name: "find_next_connection",
+    schema: z.object({}),
+    run: async (ctx) => {
+      const outcome = await nextRecommendation(ctx.userId);
+      if (outcome.status === "NOT_ELIGIBLE") {
+        const agentText =
+          outcome.reason === "PAUSED"
+            ? "You asked me to pause introductions, so I'm holding off. Tell me when you'd like me to start looking again."
+            : "Before I introduce anyone, you'll need to finish verification — it's what keeps the other side real too.";
+        return { ok: true, data: { agentText }, message: `Not eligible: ${outcome.reason}` };
+      }
+      if (outcome.status === "NO_CANDIDATE") {
+        return {
+          ok: true,
+          data: {
+            agentText:
+              "Nobody worth introducing you to right now. I'd rather wait than send you someone I don't believe in — I'll come back when that changes.",
+          },
+          message: "No candidate",
+        };
+      }
+      const recommendation = outcome.recommendation;
+      const agentText = await introductionText(recommendation);
+      if (!recommendation.presentedAt) {
+        await prisma.recommendation.update({
+          where: { id: recommendation.id },
+          data: { presentedAt: new Date() },
+        });
+      }
+      return {
+        ok: true,
+        data: { agentText, recommendationId: recommendation.id },
+        message: outcome.status === "CREATED" ? "Recommendation created" : "Recommendation repeated",
+      };
+    },
+  }),
+  tool({
+    name: "respond_to_recommendation",
+    schema: z.object({
+      state: z.enum(["INTERESTED", "NOT_INTERESTED", "LATER"]),
+      recommendationId: z.string().min(1).optional(),
+      privateReason: z.string().max(500).optional(),
+    }),
+    run: async (ctx, args) => {
+      const target = args.recommendationId
+        ? await prisma.recommendation.findUnique({ where: { id: args.recommendationId } })
+        : await openRecommendation(ctx.userId);
+      if (!target) {
+        return {
+          ok: false,
+          data: { agentText: "There's no introduction waiting on your answer right now." },
+          message: "No open recommendation",
+        };
+      }
+      if (target.userId !== ctx.userId) throw new AuthorizationError();
+
+      const result = await respondToRecommendation({
+        userId: ctx.userId,
+        recommendationId: target.id,
+        state: args.state,
+        privateReason: args.privateReason,
+      });
+
+      let agentText: string;
+      if (result.state === "LATER") {
+        agentText = "No rush — I'll keep it open and won't read anything into it.";
+      } else if (result.state === "NOT_INTERESTED") {
+        agentText = "Understood, I'll pass. If you want to tell me what didn't fit, it helps me — but you don't have to.";
+      } else if (result.mutual) {
+        agentText =
+          "Good news: you're both interested. Next step is a single 20-minute video call — I'll sort out a time that works for you both.";
+      } else {
+        agentText = "Noted. I'll check with them and let you know — no chasing, no notifications in between.";
+      }
+      return { ok: true, data: { agentText, mutual: result.mutual }, message: `Interest: ${result.state}` };
     },
   }),
 ];

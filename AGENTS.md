@@ -13,6 +13,7 @@ Modular monolith: `src/modules/<module>`, no microservices.
 cp .env.example .env          # all providers default to mock
 npm install
 npm run db:migrate            # applies prisma/migrations to DATABASE_URL
+npm run db:seed               # 8 demo profiles (isDemo = true)
 npm run dev                   # http://localhost:3000
 npm run worker                # separate shell: drains AgentJob + Outbox
 ```
@@ -37,6 +38,8 @@ setup file truncates between tests.
 | `messaging` | Ingress → identity resolution → conversation → durable inbox/outbox → worker |
 | `agent` | Runtime and validated tools; the only path from model output to domain state |
 | `relationship` | Relationship signals and the confirm / reject lifecycle |
+| `matching` | Mutual hard filters, deterministic scoring, one-at-a-time recommendations, mutual interest |
+| `verification` | Verification start / complete and connection-pool eligibility |
 | `shared` | Prisma client, crypto, domain errors |
 
 Rules that must not be broken:
@@ -50,6 +53,11 @@ Rules that must not be broken:
 - Provider capabilities that are not verified against official docs are not
   implemented; they throw `NotImplementedByProvider` instead of faking success.
 - An undetermined send goes to `NEEDS_RECONCILIATION`, never a blind retry.
+- Hard filters are mutual and run before scoring; no score or learned preference can
+  override them.
+- Compatibility scores stay internal — the user sees a reason, never a percentage.
+- A connection exists only after both sides said yes; "later" and silence are neutral
+  evidence, never a rejection.
 
 ## Implementation status
 
@@ -65,7 +73,13 @@ Implemented and tested:
   per-user ordering and restart recovery.
 - Agent runtime: bounded context (recent turns + summary + confirmed facts), validated
   tools, reply enqueued in the same transaction as the memory write.
-- Relationship signals with `PENDING → CONFIRMED / REJECTED` review.
+- Relationship signals with `PENDING → CONFIRMED / REJECTED` review; confirming an
+  identity fact updates the user record and confirming a boundary creates a hard filter.
+- Mock verification gating pool eligibility (one-time token, only its hash is stored).
+- Matching: mutual hard filters (age, city / long distance, language, intent, status,
+  blocks), deterministic scoring, one open recommendation at a time.
+- Interest capture through the Agent, mutual interest creating a `Connection`, and
+  `PreferenceLearningEvent` rows recorded as evidence (not conclusions).
 - Website: `/`, `/how-it-works`, `/safety`, `/privacy`, `/terms`, `/meet`, plus the
   dev-only `/dev/chat`.
 
@@ -82,6 +96,12 @@ Interface declared, not connected:
 - `OpenAIProvider` — throws; the runtime also refuses to send user content to an
   external model without `THIRD_PARTY_PROCESSING` consent.
 
-Not started: preference learning engine (models exist, no aggregation), matching
-engine, recommendations, interest, connections, scheduling, video rooms and grants,
-private feedback, contact exchange, `/account`, `/admin`, seeded demo users.
+Demo pool: `prisma/seed.ts` creates 8 `isDemo` profiles. A demo profile is never the
+subject of a recommendation, its side of mutual interest is simulated deterministically
+from the same score, and introductions of demo profiles are labelled in the message.
+`MATCH_WITH_DEMO_USERS=false` keeps real users away from them entirely.
+
+Not started: preference learning aggregation (events are recorded, nothing consumes
+them yet), availability and scheduling, video rooms and access grants, private
+post-video feedback, contact exchange consent, agent hand-off, `/account`, `/admin`,
+safety block/report APIs.

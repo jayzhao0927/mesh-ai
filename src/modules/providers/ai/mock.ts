@@ -52,6 +52,18 @@ const rules: Rule[] = [
     }),
   },
   {
+    pattern:
+      /(?:我(?:平时)?(?:喜欢|爱)|i (?:love|enjoy) )\s*(攀岩|跑步|摄影|写作|做饭|音乐|旅行|咖啡|climbing|running|photography|writing|cooking|music|travel|coffee|hiking|food)/i,
+    build: (m, text) => ({
+      category: "interest",
+      key: "topic",
+      value: INTEREST_CANON[(m[1] ?? "").toLowerCase()] ?? (m[1] ?? "").toLowerCase(),
+      confidence: 0.7,
+      evidenceQuote: text,
+      source: "USER_STATED",
+    }),
+  },
+  {
     pattern: /(换了?工作|换工作|new job|changed jobs)/i,
     build: (_m, text) => ({
       category: "lifestyle",
@@ -63,6 +75,19 @@ const rules: Rule[] = [
     }),
   },
 ];
+
+/** Maps the phrases the mock understands onto the demo pool's vocabulary. */
+const INTEREST_CANON: Record<string, string> = {
+  攀岩: "climbing",
+  跑步: "running",
+  摄影: "photography",
+  写作: "writing",
+  做饭: "food",
+  音乐: "music",
+  旅行: "travel",
+  咖啡: "coffee",
+  cooking: "food",
+};
 
 const INTENT_RULES: { pattern: RegExp; intent: string }[] = [
   { pattern: /(找对象|恋爱|dating)/i, intent: "DATING" },
@@ -95,6 +120,17 @@ export class MockAIProvider implements AIProvider {
         toolCalls.push({ name: "set_connection_intent", args: { intent } });
         break;
       }
+    }
+    if (/(帮我找|介绍|认识(?:个|一个)?人|find (?:me )?someone|introduce)/i.test(text)) {
+      toolCalls.push({ name: "find_next_connection", args: {} });
+    }
+    // Order matters: a refusal contains the same words as an acceptance.
+    if (/(不感兴趣|不合适|不想认识|算了|pass|not interested)/i.test(text)) {
+      toolCalls.push({ name: "respond_to_recommendation", args: { state: "NOT_INTERESTED" } });
+    } else if (/(以后再说|过段时间|再说吧|later|not now)/i.test(text)) {
+      toolCalls.push({ name: "respond_to_recommendation", args: { state: "LATER" } });
+    } else if (/(感兴趣|想认识|见一面|安排吧|\byes\b|interested)/i.test(text)) {
+      toolCalls.push({ name: "respond_to_recommendation", args: { state: "INTERESTED" } });
     }
     if (/(暂停|pause)/i.test(text)) toolCalls.push({ name: "pause_connections", args: {} });
     if (/(继续找|恢复|resume)/i.test(text)) toolCalls.push({ name: "resume_connections", args: {} });

@@ -18,13 +18,30 @@ interface PendingSignal {
   source: string;
 }
 
+interface AccountStatus {
+  state: string;
+  verified: boolean;
+  poolEligible: boolean;
+  city: string | null;
+  ageYears: number | null;
+  intent: string | null;
+}
+
+interface ConnectionRow {
+  id: string;
+  status: string;
+  withName: string;
+}
+
 interface Transcript {
   userId: string | null;
   messages: TranscriptMessage[];
   pending: PendingSignal[];
+  status?: AccountStatus | null;
+  connections?: ConnectionRow[];
 }
 
-const EMPTY: Transcript = { userId: null, messages: [], pending: [] };
+const EMPTY: Transcript = { userId: null, messages: [], pending: [], status: null, connections: [] };
 
 export default function DevChat() {
   const [externalId, setExternalId] = useState("dev-user-1");
@@ -53,6 +70,19 @@ export default function DevChat() {
     const body = await res.json();
     if (!res.ok) setError(body.error ?? "Request failed");
     else setState(body);
+    setBusy(false);
+  }
+
+  async function verify() {
+    if (!state.userId) return;
+    setBusy(true);
+    const res = await fetch("/api/dev/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: state.userId }),
+    });
+    if (!res.ok) setError((await res.json()).error ?? "Verification failed");
+    await load(externalId);
     setBusy(false);
   }
 
@@ -107,7 +137,32 @@ export default function DevChat() {
         >
           Replay last webhook
         </button>
+        <button
+          type="button"
+          onClick={() => void verify()}
+          className="rounded-full border border-line px-4 py-2"
+          disabled={busy || !state.userId || state.status?.poolEligible}
+          title="Mock verification only — this is not identity verification"
+        >
+          {state.status?.poolEligible ? "Verified (mock)" : "Complete mock verification"}
+        </button>
       </div>
+
+      {state.status && (
+        <div className="flex flex-wrap gap-4 rounded-xl border border-line bg-white px-4 py-3 text-xs text-muted">
+          <span>status: {state.status.state}</span>
+          <span>pool eligible: {state.status.poolEligible ? "yes" : "no"}</span>
+          <span>intent: {state.status.intent ?? "—"}</span>
+          <span>city: {state.status.city ?? "—"}</span>
+          <span>age: {state.status.ageYears ?? "—"}</span>
+          <span>
+            connections:{" "}
+            {state.connections?.length
+              ? state.connections.map((c) => `${c.withName} (${c.status})`).join(", ")
+              : "—"}
+          </span>
+        </div>
+      )}
 
       <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
         <div className="space-y-4">
