@@ -39,6 +39,9 @@ setup file truncates between tests.
 | `agent` | Runtime and validated tools; the only path from model output to domain state |
 | `relationship` | Relationship signals and the confirm / reject lifecycle |
 | `matching` | Mutual hard filters, deterministic scoring, one-at-a-time recommendations, mutual interest |
+| `learning` | Learning events → evidence → hypotheses, user corrections, soft-ranking inputs |
+| `video` | Availability and timezones, scheduling, access grants, private post-video feedback |
+| `contact` | Versioned contact methods, per-connection exchange consent, the exchange itself |
 | `verification` | Verification start / complete and connection-pool eligibility |
 | `shared` | Prisma client, crypto, domain errors |
 
@@ -61,8 +64,9 @@ Rules that must not be broken:
 
 ## Implementation status
 
-Phase 1 (foundation) is complete and parts of Phase 2 (messaging agent and memory)
-are working against the mock providers.
+Phases 1–4 are implemented against the mock providers: foundation, messaging agent and
+memory, the connection and learning engine, and the video hand-off. Phase 5
+(operations) has not started.
 
 Implemented and tested:
 
@@ -80,8 +84,21 @@ Implemented and tested:
   blocks), deterministic scoring, one open recommendation at a time.
 - Interest capture through the Agent, mutual interest creating a `Connection`, and
   `PreferenceLearningEvent` rows recorded as evidence (not conclusions).
-- Website: `/`, `/how-it-works`, `/safety`, `/privacy`, `/terms`, `/meet`, plus the
-  dev-only `/dev/chat`.
+- Preference learning: events aggregate into `LearnedPreference` hypotheses through
+  `PreferenceEvidence`, one connection counts as one sample whatever happens inside it,
+  a hypothesis only reaches soft ranking after enough independent evidence, and
+  `PreferenceCorrection` (confirm / reject / unsure) is idempotent, expires open
+  recommendations that leaned on the hypothesis, and is never overridden by later
+  behaviour.
+- Availability with per-user timezones, overlap detection and a single 20-minute
+  `VideoSession`; each side gets its own `VideoAccessGrant` (random token, only the
+  hash stored, bound to one person, expiring, revoked when the call ends).
+- Private post-video feedback: each answer stays with its author, discomfort raises a
+  `SafetyReport`, and only the fact that both said yes ever crosses.
+- Contact exchange: contact methods are versioned, consent names the connection, method
+  and version, and the exchange runs only when both consents are live at that moment.
+- Website: `/`, `/how-it-works`, `/safety`, `/privacy`, `/terms`, `/meet`,
+  `/video/[token]`, plus the dev-only `/dev/chat`.
 
 Mock only (labelled as such in the product):
 
@@ -101,7 +118,5 @@ subject of a recommendation, its side of mutual interest is simulated determinis
 from the same score, and introductions of demo profiles are labelled in the message.
 `MATCH_WITH_DEMO_USERS=false` keeps real users away from them entirely.
 
-Not started: preference learning aggregation (events are recorded, nothing consumes
-them yet), availability and scheduling, video rooms and access grants, private
-post-video feedback, contact exchange consent, agent hand-off, `/account`, `/admin`,
-safety block/report APIs.
+Not started: `/account`, `/admin`, safety block/report APIs, consent management UI,
+audit and analytics (Phase 5), `/verification/[token]` as a web page.

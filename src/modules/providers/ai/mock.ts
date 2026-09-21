@@ -137,6 +137,62 @@ export class MockAIProvider implements AIProvider {
     if (/(你记住了我什么|what do you (know|remember))/i.test(text)) {
       toolCalls.push({ name: "get_relationship_profile", args: {} });
     }
+    if (/(你觉得我喜欢什么|你学到了什么|what have you learned|learned about me)/i.test(text)) {
+      toolCalls.push({ name: "get_learned_preferences", args: {} });
+    }
+    if (/(这个判断不对|不是稳定偏好|别这么想|that'?s not (right|me)|drop that)/i.test(text)) {
+      toolCalls.push({ name: "correct_preference_hypothesis", args: { correction: "REJECT" } });
+    } else if (/(说得对|确实是这样|you'?re right about that)/i.test(text)) {
+      toolCalls.push({ name: "correct_preference_hypothesis", args: { correction: "CONFIRM" } });
+    } else if (/(说不好|不确定|not sure about that)/i.test(text)) {
+      toolCalls.push({ name: "correct_preference_hypothesis", args: { correction: "UNSURE" } });
+    }
+
+    // Phase 4: scheduling, post-video feedback and contact exchange.
+    if (/(安排视频|视频时间|什么时候视频|schedule (a )?(video|call)|video times)/i.test(text)) {
+      toolCalls.push({ name: "propose_video_times", args: {} });
+    }
+    const slot = text.match(/(?:第\s*([一二三123])\s*(?:个|场)?|slot\s*([123])|option\s*([123]))/i);
+    if (slot) {
+      const raw = slot[1] ?? slot[2] ?? slot[3] ?? "1";
+      const index = ({ 一: 1, 二: 2, 三: 3 } as Record<string, number>)[raw] ?? Number(raw);
+      toolCalls.push({ name: "schedule_video", args: { slotIndex: index - 1 } });
+    }
+    if (/(不太舒服|不舒服|uncomfortable)/i.test(text)) {
+      toolCalls.push({
+        name: "submit_video_feedback",
+        args: { wantContinue: "NO", comfort: "UNCOMFORTABLE", keepSearching: true },
+      });
+    } else if (/(想继续认识|愿意继续|还想继续|want to continue|keep going)/i.test(text)) {
+      toolCalls.push({
+        name: "submit_video_feedback",
+        args: { wantContinue: "YES", comfort: "NATURAL", keepSearching: true },
+      });
+    } else if (/(不想继续|不用继续了|don'?t want to continue)/i.test(text)) {
+      toolCalls.push({
+        name: "submit_video_feedback",
+        args: { wantContinue: "NO", comfort: "NEUTRAL", keepSearching: true },
+      });
+    }
+    const contact = text.match(
+      /(?:微信(?:号)?(?:是|：|:)?\s*([A-Za-z0-9_-]{4,40})|wechat[:：]?\s*([A-Za-z0-9_-]{4,40})|(?:手机号|电话)(?:是|：|:)?\s*(\+?[\d][\d\s-]{5,20}))/i,
+    );
+    if (contact) {
+      const wechat = contact[1] ?? contact[2];
+      toolCalls.push({
+        name: "set_contact_method",
+        args: wechat
+          ? { kind: "WECHAT", value: wechat }
+          : { kind: "PHONE", value: (contact[3] ?? "").trim() },
+      });
+    }
+    // Handing over a contact detail is not permission to pass it on; consent
+    // has to be its own sentence.
+    if (/(先不换|暂时不换|不交换联系方式|not yet)/i.test(text)) {
+      toolCalls.push({ name: "decline_contact_exchange", args: {} });
+    } else if (/(同意交换|交换联系方式|可以给他|可以给她|exchange contact)/i.test(text)) {
+      toolCalls.push({ name: "consent_contact_exchange", args: {} });
+    }
 
     return { reply: buildReply(text, proposedSignals, input), proposedSignals, toolCalls };
   }

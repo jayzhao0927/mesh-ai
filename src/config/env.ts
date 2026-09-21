@@ -7,6 +7,8 @@ const schema = z.object({
   VIDEO_PROVIDER: z.enum(["mock"]).default("mock"),
   VERIFICATION_PROVIDER: z.enum(["mock"]).default("mock"),
   AGENT_PHONE_NUMBER: z.string().default(""),
+  /** Origin used when the Agent sends a link over messaging. */
+  APP_BASE_URL: z.string().default("http://localhost:3000"),
   PHOTON_API_BASE_URL: z.string().default(""),
   PHOTON_API_KEY: z.string().default(""),
   PHOTON_WEBHOOK_SECRET: z.string().default(""),

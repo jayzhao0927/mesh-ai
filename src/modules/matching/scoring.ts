@@ -1,12 +1,22 @@
-import type { ConnectionIntentType, RelationshipSignal, User } from "@prisma/client";
+import type {
+  ConnectionIntentType,
+  LearnedPreference,
+  RelationshipSignal,
+  User,
+} from "@prisma/client";
 
-export const SCORING_POLICY_VERSION = "v1";
+export const SCORING_POLICY_VERSION = "v2";
 
 export interface ScoringSubject {
   user: User;
   intent: ConnectionIntentType | null;
-  /** Confirmed, matchable signals only. Hypotheses never reach scoring. */
+  /** Confirmed, matchable signals only. Unreviewed inferences never reach scoring. */
   signals: RelationshipSignal[];
+  /**
+   * Hypotheses that earned a place in ranking. They can only ever nudge the
+   * order of people who already passed the hard filters.
+   */
+  learned?: LearnedPreference[];
 }
 
 export interface ScoreBreakdown {
@@ -14,14 +24,17 @@ export interface ScoreBreakdown {
   components: { name: string; weight: number; value: number; detail?: string }[];
   /** Plain-language reason shown to the user. Never a percentage or a rank. */
   reason: string;
+  /** Which hypotheses moved this score, so a correction can undo their effect. */
+  learnedPreferenceIds: string[];
 }
 
 const WEIGHTS = {
-  intent: 0.3,
-  sharedInterests: 0.3,
-  location: 0.2,
-  language: 0.1,
-  ageProximity: 0.1,
+  intent: 0.28,
+  sharedInterests: 0.28,
+  location: 0.18,
+  language: 0.08,
+  ageProximity: 0.08,
+  learnedFit: 0.1,
 } as const;
 
 function normalize(value: string): string {
@@ -96,11 +109,58 @@ export function scorePair(a: ScoringSubject, b: ScoringSubject): ScoreBreakdown 
     value: ageGap == null ? 0.5 : Math.max(0, 1 - ageGap / 15),
   });
 
+  const learned = learnedFit(a, b);
+  components.push({
+    name: "learnedFit",
+    weight: WEIGHTS.learnedFit,
+    value: learned.value,
+    detail: learned.detail,
+  });
+
   const score = Number(
     components.reduce((sum, c) => sum + c.weight * c.value, 0).toFixed(4),
   );
 
-  return { score, components, reason: buildReason(components) };
+  return {
+    score,
+    components,
+    reason: buildReason(components),
+    learnedPreferenceIds: learned.ids,
+  };
+}
+
+/**
+ * A small nudge from what the user's real connections suggested so far. Only
+ * confirmed hypotheses are ever put into words to the user — an observation
+ * stays silent until they have had a say.
+ */
+function learnedFit(
+  a: ScoringSubject,
+  b: ScoringSubject,
+): { value: number; detail?: string; ids: string[] } {
+  const hypotheses = a.learned ?? [];
+  if (hypotheses.length === 0) return { value: 0, ids: [] };
+
+  const candidateInterests = new Set(
+    b.signals.filter((s) => s.category === "interest").map((s) => normalize(s.value)),
+  );
+  const matched = hypotheses.filter((h) => {
+    if (h.category === "interest") return candidateInterests.has(normalize(h.value));
+    if (h.key === "same_city_candidate") return normalize(h.value) === normalize(b.user.city ?? "");
+    if (h.key === "age_band" && b.user.ageYears != null) {
+      const band = Math.floor(b.user.ageYears / 5) * 5;
+      return h.value === `${band}-${band + 4}`;
+    }
+    return false;
+  });
+  if (matched.length === 0) return { value: 0, ids: [] };
+
+  const confirmed = matched.filter((m) => m.status === "CONFIRMED");
+  return {
+    value: Math.min(matched.length, 2) / 2,
+    detail: confirmed[0]?.value,
+    ids: matched.map((m) => m.id),
+  };
 }
 
 function buildReason(components: ScoreBreakdown["components"]): string {
@@ -111,6 +171,8 @@ function buildReason(components: ScoreBreakdown["components"]): string {
   if (location?.detail) parts.push(`you're both in ${location.detail}`);
   const intent = components.find((c) => c.name === "intent");
   if (intent?.detail) parts.push("you're looking for the same kind of connection");
+  const learned = components.find((c) => c.name === "learnedFit");
+  if (learned?.detail) parts.push(`it lines up with what you told me matters (${learned.detail})`);
   if (parts.length === 0) return "I think the way you each talk about people would land well.";
   return parts.join(", and ");
 }
