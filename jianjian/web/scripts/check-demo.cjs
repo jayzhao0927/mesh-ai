@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
  await page.goto(process.env.WEB_TEST_URL || 'http://127.0.0.1:5173/try');await page.getByText('很高兴，见到你。').waitFor();
 
  await page.getByPlaceholder('你的昵称').fill('体验用户');await page.getByRole('button',{name:'开始认识我'}).click();
- async function text(v){await page.getByPlaceholder('简单说说',{exact:true}).fill(v);await page.getByRole('button',{name:'发送',exact:true}).click();}
+ async function text(v){const before=await page.locator('.bubble').last().innerText();await page.getByPlaceholder('简单说说',{exact:true}).fill(v);await page.getByRole('button',{name:'发送',exact:true}).click();await page.waitForFunction(previous=>Array.from(document.querySelectorAll('.bubble')).at(-1)?.textContent!==previous,before);}
  async function pick(v){await page.getByRole('button',{name:v,exact:true}).click();}
  await text('上海');await text('36');await pick('男生');await pick('稳定恋爱');await pick('常联系，也各有空间');
  await pick('摄影');await pick('做饭');await pick('就这些');await pick('宅家');await text('杭州');await text('设计师');await pick('两个人一起规划');await pick('温和安静');await pick('安静吃顿饭');await pick('认真听我说话');await pick('阳光开朗');await pick('温和委婉');await pick('先冷静，再好好聊');
