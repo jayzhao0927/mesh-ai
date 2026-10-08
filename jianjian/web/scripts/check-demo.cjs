@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 
  await page.getByPlaceholder('你的昵称').fill('体验用户');await page.getByRole('button',{name:'开始认识我'}).click();
  async function text(v){const before=await page.locator('.bubble').last().innerText();await page.getByPlaceholder('简单说说',{exact:true}).fill(v);await page.getByRole('button',{name:'发送',exact:true}).click();await page.waitForFunction(previous=>Array.from(document.querySelectorAll('.bubble')).at(-1)?.textContent!==previous,before);}
- async function pick(v){await page.getByRole('button',{name:v,exact:true}).click();}
+ async function pick(v){const button=page.getByRole('button',{name:v,exact:true});const answering=await button.evaluate(el=>!!el.closest('.answer'));const toggling=v!=='就这些'&&await page.getByRole('button',{name:'就这些',exact:true}).count()>0;const before=answering?await page.locator('.bubble').last().innerText():'';await button.click();if(answering&&!toggling)await page.waitForFunction(previous=>Array.from(document.querySelectorAll('.bubble')).at(-1)?.textContent!==previous,before);}
  await text('上海');await text('36');await pick('男生');await pick('稳定恋爱');await pick('常联系，也各有空间');
  await pick('摄影');await pick('做饭');await pick('就这些');await pick('宅家');await text('杭州');await text('设计师');await pick('两个人一起规划');await pick('温和安静');await pick('安静吃顿饭');await pick('认真听我说话');await pick('阳光开朗');await pick('温和委婉');await pick('先冷静，再好好聊');
  await page.getByRole('button',{name:'换个随机场景'}).waitFor();
