@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { newInviteCode, requireAuth } from '../auth.js';
-import { query } from '../db/db.js';
+import { query, withTransaction } from '../db/db.js';
 
 // 搭桥邀请盲盒规则：
 // - 每人每周最多 5 封；同一对象 30 天内只能邀请一次
@@ -20,31 +20,37 @@ export async function inviteRoutes(app: FastifyInstance) {
     if (!inviteePhone && !inviteeEmail) {
       return reply.code(400).send({ error: '请提供被邀请人手机号或邮箱' });
     }
-    const weekly = await query<{ c: string }>(
-      `SELECT COUNT(*) c FROM invites WHERE inviter_id = $1 AND created_at > now() - interval '7 days'
-       AND status <> 'withdrawn'`,
-      [userId],
-    );
-    if (Number(weekly[0].c) >= 5) {
-      return reply.code(429).send({ error: '每周最多邀请 5 位' });
+    if (kind !== undefined && kind !== 'bridge' && kind !== 'crush') {
+      return reply.code(400).send({ error: '邀请类型无效' });
     }
-    const dup = await query<{ c: string }>(
-      `SELECT COUNT(*) c FROM invites
-       WHERE inviter_id = $1 AND created_at > now() - interval '30 days'
-       AND (invitee_phone = $2 OR invitee_email = $3) AND status <> 'withdrawn'`,
-      [userId, inviteePhone ?? null, inviteeEmail ?? null],
-    );
-    if (Number(dup[0].c) > 0) {
-      return reply.code(429).send({ error: '同一对象 30 天内只能邀请一次' });
-    }
-    const code = newInviteCode();
-    const rows = await query<{ id: string }>(
-      `INSERT INTO invites (inviter_id, invitee_phone, invitee_email, code, kind)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [userId, inviteePhone ?? null, inviteeEmail ?? null, code, kind ?? 'bridge'],
-    );
-    // TODO: 实际发送邀请短信/微信（当前仅生成 code，发送走 notify）
-    return { id: rows[0].id, code };
+    const result = await withTransaction(async () => {
+      await query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+      const weekly = await query<{ c: string }>(
+        `SELECT COUNT(*) c FROM invites WHERE inviter_id = $1 AND created_at > now() - interval '7 days'`,
+        [userId],
+      );
+      if (Number(weekly[0].c) >= 5) {
+        return { code: 429, body: { error: '每周最多邀请 5 位' } };
+      }
+      const dup = await query<{ c: string }>(
+        `SELECT COUNT(*) c FROM invites
+         WHERE inviter_id = $1 AND created_at > now() - interval '30 days'
+         AND (invitee_phone = $2 OR invitee_email = $3)`,
+        [userId, inviteePhone ?? null, inviteeEmail ?? null],
+      );
+      if (Number(dup[0].c) > 0) {
+        return { code: 429, body: { error: '同一对象 30 天内只能邀请一次' } };
+      }
+      const code = newInviteCode();
+      const rows = await query<{ id: string }>(
+        `INSERT INTO invites (inviter_id, invitee_phone, invitee_email, code, kind)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [userId, inviteePhone ?? null, inviteeEmail ?? null, code, kind ?? 'bridge'],
+      );
+      // TODO: 实际发送邀请短信/微信（当前仅生成 code，发送走 notify）
+      return { code: 200, body: { id: rows[0].id, code } };
+    });
+    return reply.code(result.code).send(result.body);
   });
 
   // 我发出的邀请（盲盒：只暴露注册/体验状态）

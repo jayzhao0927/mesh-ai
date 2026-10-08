@@ -1,4 +1,5 @@
 import { query } from './db/db.js';
+import { ACTIVE_RECOMMENDATION_SQL } from './recommendation-lifecycle.js';
 
 // 匹配模块 v1：p_mutual dyad 打分（冷启动阶段，加权规则版）
 // 唯一优化目标：一次推荐后，两个人双向愿意继续的概率。
@@ -243,7 +244,7 @@ function completeness(profile: any): number {
 
 // 推荐卡只展示对方亲口说的、非现实层的字段；revealed 推断、置信度不出卡，含数字的值整条不出
 const DISPLAY_KEYS = ['hometown', 'hobbies', 'occupation', 'vibe', 'weekend', 'ideal_date', 'comm_style'];
-const DIGIT_RE = /[0-9０-９]/;
+const DIGIT_RE = /\p{Decimal_Number}/u;
 
 export function containsDigit(text: string): boolean {
   return DIGIT_RE.test(text);
@@ -253,6 +254,16 @@ export function containsDigit(text: string): boolean {
 export function assertNoDigits(texts: string[]): void {
   const bad = texts.find(containsDigit);
   if (bad !== undefined) throw new Error(`推荐展示内容不得包含数字：${bad}`);
+}
+
+/** Revalidate stored display material too, including snapshots created before this guard. */
+export function sanitizeReasons(reasons: unknown): string[] {
+  const clean = Array.isArray(reasons)
+    ? reasons.filter((reason): reason is string => typeof reason === 'string' && reason.trim() !== '' && !containsDigit(reason))
+    : [];
+  if (clean.length === 0) clean.push('你们的生活节奏和期待的连接方式很合拍');
+  assertNoDigits(clean);
+  return clean;
 }
 
 export function sanitizeSnapshot(profile: any): { stated: Record<string, { value: string | string[] }>; revealed: Record<string, never> } {
@@ -316,12 +327,20 @@ export async function pickCandidate(viewerId: string, rng: () => number = Math.r
      FROM users u
      JOIN connection_targets ct ON ct.user_id = u.id
      LEFT JOIN profiles p ON p.user_id = u.id
-     LEFT JOIN recommendations r
-       ON r.candidate_id = u.id AND r.user_id = $1
-       AND r.created_at > now() - interval '30 days'
      WHERE u.id <> $1
        AND ct.target = $2
-       AND r.id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM matching_states ms WHERE ms.user_id = u.id AND ms.paused)
+       AND NOT EXISTS (
+         SELECT 1 FROM recommendations r
+         WHERE r.created_at > now() - interval '30 days'
+           AND ((r.user_id = $1 AND r.candidate_id = u.id)
+             OR (r.user_id = u.id AND r.candidate_id = $1))
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM recommendations r
+         WHERE (r.user_id = u.id OR r.candidate_id = u.id)
+           AND ${ACTIVE_RECOMMENDATION_SQL}
+       )
      ORDER BY random() LIMIT ${RECALL_LIMIT}`,
     [viewerId, target],
   );
@@ -376,7 +395,8 @@ export async function pickCandidate(viewerId: string, rng: () => number = Math.r
 }
 
 /** 对用户可见的推荐状态：pass 只在内部标记，对外与「等待中」无法区分 */
-export function publicStatus(status: string): 'pending' | 'mutual' {
+export function publicStatus(status: string, expired = false): 'pending' | 'mutual' | 'expired' {
+  if (expired || status === 'expired') return 'expired';
   return status === 'mutual' ? 'mutual' : 'pending';
 }
 

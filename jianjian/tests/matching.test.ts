@@ -75,6 +75,7 @@ describe('推荐理由 / 推荐卡禁数字', () => {
   it('违规数字直接断言失败', () => {
     assert.throws(() => assertNoDigits(['你们身高差 15 厘米']), /不得包含数字/);
     assert.throws(() => assertNoDigits(['年收入３０万']), /不得包含数字/);
+    assert.throws(() => assertNoDigits(['收入٣٠万']), /不得包含数字/);
     assert.doesNotThrow(() => assertNoDigits(['你们都喜欢徒步']));
   });
 

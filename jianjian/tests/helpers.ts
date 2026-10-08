@@ -7,6 +7,8 @@ import { buildApp } from '../src/app.js';
 import { pool } from '../src/db/db.js';
 
 const TABLES = [
+  'recommendation_response_events',
+  'matching_states',
   'onboarding_skips',
   'notification_logs',
   'agent_shares',
@@ -59,7 +61,7 @@ export function setupTestApp(): Ctx {
     await pool.query(`TRUNCATE ${TABLES.join(', ')} CASCADE`);
   });
   after(async () => {
-    await ctx.app.close();
+    await ctx.app?.close();
     await pool.end();
   });
   return ctx;

@@ -3,7 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth.js';
 import { config } from '../config.js';
 import { query } from '../db/db.js';
-import { publicStatus } from '../matching.js';
+import { publicStatus, sanitizeReasons, sanitizeSnapshot } from '../matching.js';
+import { isRecommendationExpired } from '../recommendation-lifecycle.js';
 
 // 统一分享链接（原型端与后端共用同一格式）：
 //   {PUBLIC_BASE_URL}/s/{type}/{token}
@@ -34,13 +35,19 @@ export async function shareRoutes(app: FastifyInstance) {
 
     if (type === 'rec') {
       const rows = await query(
-        `SELECT id, candidate_snapshot, reasons, status, created_at
+        `SELECT id, candidate_snapshot, reasons, status, created_at,
+                created_at <= now() - interval '24 hours' AS time_expired
          FROM recommendations WHERE link_token = $1`,
         [token],
       );
       if (rows.length === 0) return reply.code(404).send({ error: '推荐链接无效' });
-      const rec = rows[0] as { status: string };
-      return { kind: 'rec', ...rec, status: publicStatus(rec.status) };
+      const { time_expired, ...rec } = rows[0] as any;
+      return {
+        kind: 'rec', ...rec,
+        candidate_snapshot: sanitizeSnapshot(rec.candidate_snapshot),
+        reasons: sanitizeReasons(rec.reasons),
+        status: publicStatus(rec.status, isRecommendationExpired(rec.status, time_expired)),
+      };
     }
 
     if (type === 'video') {
@@ -69,7 +76,7 @@ export async function shareRoutes(app: FastifyInstance) {
 
     if (type === 'agent') {
       const rows = await query(
-        `SELECT COALESCE(a.agent_name, 'Jc') AS agent_name, u.nickname AS owner_nickname
+        `SELECT COALESCE(a.agent_name, '见见') AS agent_name, u.nickname AS owner_nickname
          FROM agent_shares s
          JOIN users u ON u.id = s.user_id
          LEFT JOIN agent_settings a ON a.user_id = s.user_id

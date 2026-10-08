@@ -1,7 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth.js';
-import { query } from '../db/db.js';
-import { buildReasons, pickCandidate, publicStatus, sanitizeSnapshot, weekKey } from '../matching.js';
+import { query, withTransaction } from '../db/db.js';
+import { buildReasons, publicStatus, sanitizeReasons, sanitizeSnapshot } from '../matching.js';
+import { ACTIVE_RECOMMENDATION_SQL, isRecommendationExpired } from '../recommendation-lifecycle.js';
+import { generateRecommendation } from '../recommendation-service.js';
+import { settleMatchingLifecycle, resetResponseStreak } from '../matching-lifecycle.js';
 import { notifyRecommendation } from '../notify.js';
 import { shareLink } from './share.js';
 
@@ -18,6 +21,7 @@ interface RecoRow {
   link_token: string;
   status: string;
   created_at: string;
+  time_expired: boolean;
 }
 
 /** 只返回自己的选择；对方的选择任何时候都不出接口 */
@@ -35,19 +39,22 @@ async function profileOf(userId: string): Promise<unknown> {
 }
 
 export async function recommendationRoutes(app: FastifyInstance) {
-  // 本周推荐（需登录）
+  // 当前有效推荐（需登录）
   app.get('/api/recommendations/current', async (req, reply) => {
     const userId = await requireAuth(req, reply);
     if (!userId) return;
     const rows = await query(
-      `SELECT id, candidate_snapshot, reasons, link_token, status, created_at
-       FROM recommendations WHERE user_id = $1 AND week = $2`,
-      [userId, weekKey()],
+      `SELECT r.id, r.candidate_snapshot, r.reasons, r.link_token, r.status, r.created_at
+       FROM recommendations r WHERE r.user_id = $1 AND ${ACTIVE_RECOMMENDATION_SQL}
+       ORDER BY r.created_at DESC LIMIT 1`,
+      [userId],
     );
-    if (rows.length === 0) return reply.code(404).send({ error: '本周推荐尚未生成' });
+    if (rows.length === 0) return reply.code(404).send({ error: '暂时没有有效推荐' });
     const r = rows[0] as any;
     return {
       ...r,
+      candidate_snapshot: sanitizeSnapshot(r.candidate_snapshot),
+      reasons: sanitizeReasons(r.reasons),
       status: publicStatus(r.status),
       myChoice: await myChoice(r.id, userId),
       link: shareLink('rec', r.link_token),
@@ -62,7 +69,7 @@ export async function recommendationRoutes(app: FastifyInstance) {
     const rows = await query<{ link_token: string }>(
       `SELECT r.link_token FROM recommendations r
        WHERE r.candidate_id = $1
-         AND r.created_at > now() - interval '30 days'
+         AND ${ACTIVE_RECOMMENDATION_SQL}
          AND NOT EXISTS (
            SELECT 1 FROM recommendation_intents i
            WHERE i.recommendation_id = r.id AND i.user_id = $1
@@ -80,7 +87,8 @@ export async function recommendationRoutes(app: FastifyInstance) {
     if (!userId) return;
     const { token } = req.params as { token: string };
     const rows = await query<RecoRow>(
-      `SELECT id, user_id, candidate_id, candidate_snapshot, reasons, link_token, status, created_at
+      `SELECT id, user_id, candidate_id, candidate_snapshot, reasons, link_token, status, created_at,
+              created_at <= now() - interval '24 hours' AS time_expired
        FROM recommendations WHERE link_token = $1`,
       [token],
     );
@@ -101,11 +109,14 @@ export async function recommendationRoutes(app: FastifyInstance) {
     } else {
       return reply.code(403).send({ error: '你不在这次推荐中' });
     }
+    if (isRecommendationExpired(r.status, r.time_expired)) {
+      return reply.code(410).send({ error: '推荐已过期' });
+    }
     return {
       id: r.id,
       role,
-      candidate_snapshot: card,
-      reasons,
+      candidate_snapshot: sanitizeSnapshot(card),
+      reasons: sanitizeReasons(reasons),
       status: publicStatus(r.status),
       myChoice: await myChoice(r.id, userId),
       created_at: r.created_at,
@@ -118,27 +129,19 @@ export async function recommendationRoutes(app: FastifyInstance) {
     return reply.code(301).header('Location', `/s/rec/${token}`).send();
   });
 
-  // 生成本周推荐（内部/cron 调用；dev 下开放便于联调）
+  // 生成下一条推荐（内部/cron 调用；dev 下开放便于联调）
   app.post('/api/recommendations/generate', async (req, reply) => {
     const userId = await requireAuth(req, reply);
     if (!userId) return;
-    const week = weekKey();
-    const existed = await query('SELECT id FROM recommendations WHERE user_id = $1 AND week = $2', [
-      userId,
-      week,
-    ]);
-    if (existed.length > 0) return reply.code(409).send({ error: '本周已生成推荐' });
-    const picked = await pickCandidate(userId);
-    if (!picked) return reply.code(404).send({ error: '暂无合适候选人' });
-    const rows = await query<{ id: string; link_token: string }>(
-      `INSERT INTO recommendations (user_id, week, candidate_id, candidate_snapshot, reasons, score_breakdown)
-       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb) RETURNING id, link_token`,
-      [userId, week, picked.candidate.id, JSON.stringify(picked.snapshot), JSON.stringify(picked.reasons), JSON.stringify(picked.scoreBreakdown)],
-    );
-    const link = shareLink('rec', rows[0].link_token);
+    const generated = await generateRecommendation(userId);
+    if (!generated.ok) {
+      if (generated.reason === 'no_candidate') return reply.code(404).send({ error: '暂无合适候选人' });
+      return reply.code(409).send({ error: generated.reason === 'paused' ? '匹配已暂停，在对话中说“继续匹配”即可恢复' : '当前连接尚未结束' });
+    }
+    const link = shareLink('rec', generated.linkToken);
     await notifyRecommendation(userId, link);
-    await notifyRecommendation(picked.candidate.id, link);
-    return { id: rows[0].id, link };
+    await notifyRecommendation(generated.candidateId, link);
+    return { id: generated.id, link };
   });
 
   // 表达意愿：interested / pass（盲选，对方不可见）
@@ -150,36 +153,46 @@ export async function recommendationRoutes(app: FastifyInstance) {
     if (!['interested', 'pass'].includes(choice ?? '')) {
       return reply.code(400).send({ error: 'choice 只能是 interested 或 pass' });
     }
-    const reco = await query<{ user_id: string; candidate_id: string; status: string }>(
-      'SELECT user_id, candidate_id, status FROM recommendations WHERE id = $1',
-      [id],
-    );
-    if (reco.length === 0) return reply.code(404).send({ error: '推荐不存在' });
-    const r = reco[0];
-    const side = userId === r.user_id ? 'a' : userId === r.candidate_id ? 'b' : null;
-    if (!side) return reply.code(403).send({ error: '你不在这次推荐中' });
+    const result = await withTransaction(async () => {
+      await settleMatchingLifecycle();
+      const reco = await query<{ user_id: string; candidate_id: string; status: string; time_expired: boolean }>(
+        `SELECT user_id, candidate_id, status, created_at <= now() - interval '24 hours' AS time_expired
+         FROM recommendations WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      if (reco.length === 0) return { code: 404, body: { error: '推荐不存在' } };
+      const r = reco[0];
+      const side = userId === r.user_id ? 'a' : userId === r.candidate_id ? 'b' : null;
+      if (!side) return { code: 403, body: { error: '你不在这次推荐中' } };
+      if (isRecommendationExpired(r.status, r.time_expired)) return { code: 410, body: { error: '推荐已过期' } };
+      if (r.status === 'mutual') return choice === 'interested'
+        ? { code: 200, body: { ok: true, mutual: true } }
+        : { code: 409, body: { error: '当前连接已进入视频安排' } };
 
-    await query(
-      `INSERT INTO recommendation_intents (recommendation_id, user_id, side, choice)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (recommendation_id, user_id) DO UPDATE SET choice = $4`,
-      [id, userId, side, choice],
-    );
+      await query(
+        `INSERT INTO recommendation_intents (recommendation_id, user_id, side, choice)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (recommendation_id, user_id) DO UPDATE SET choice = $4`,
+        [id, userId, side, choice],
+      );
+      await resetResponseStreak(userId);
 
-    if (choice === 'pass') {
-      // 任一方 pass：另一方与邀请人永远不知道（状态仅内部标记）
-      await query(`UPDATE recommendations SET status = 'passed' WHERE id = $1`, [id]);
-      return { ok: true, mutual: false };
-    }
-    const intents = await query<{ side: string; choice: string }>(
-      'SELECT side, choice FROM recommendation_intents WHERE recommendation_id = $1',
-      [id],
-    );
-    const mutual =
-      intents.length === 2 && intents.every((i) => i.choice === 'interested');
-    if (mutual) {
-      await query(`UPDATE recommendations SET status = 'mutual' WHERE id = $1`, [id]);
-    }
-    return { ok: true, mutual };
+      if (choice === 'pass') {
+        // 任一方 pass：另一方与邀请人永远不知道（状态仅内部标记）
+        await query(`UPDATE recommendations SET status = 'passed' WHERE id = $1`, [id]);
+        return { code: 200, body: { ok: true, mutual: false } };
+      }
+      const intents = await query<{ side: string; choice: string }>(
+        'SELECT side, choice FROM recommendation_intents WHERE recommendation_id = $1',
+        [id],
+      );
+      const mutual =
+        intents.length === 2 && intents.every((i) => i.choice === 'interested');
+      if (mutual) {
+        await query(`UPDATE recommendations SET status = 'mutual', mutual_at = COALESCE(mutual_at, now()) WHERE id = $1`, [id]);
+      }
+      return { code: 200, body: { ok: true, mutual } };
+    });
+    return reply.code(result.code).send(result.body);
   });
 }

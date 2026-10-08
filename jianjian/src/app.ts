@@ -8,9 +8,17 @@ import { recommendationRoutes } from './routes/recommendations.js';
 import { settingsRoutes } from './routes/settings.js';
 import { shareRoutes } from './routes/share.js';
 import { videoRoutes } from './routes/video.js';
+import { settleMatchingLifecycle } from './matching-lifecycle.js';
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? true });
+  app.addHook('preHandler', async req => {
+    const path = req.url.split('?')[0];
+    if (path.startsWith('/api/recommendations/') || path.startsWith('/api/video/') ||
+        path.startsWith('/v/') || path.startsWith('/s/rec/') || path.startsWith('/s/video/')) {
+      await settleMatchingLifecycle();
+    }
+  });
 
   app.get('/health', async () => ({ ok: true, version: '0.1.0' }));
 

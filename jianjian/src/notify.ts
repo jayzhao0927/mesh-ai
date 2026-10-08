@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { query } from './db/db.js';
+import { getAgentName } from './agent-name.js';
 
 // 触达层：微信服务号模板消息（主）+ 短信（兜底）
 // v0.1 为 stub：只落 notification_logs，不真实发送。
@@ -42,10 +43,11 @@ async function smsSend(p: NotifyPayload): Promise<void> {
 
 /** 推荐触达：微信主 + 短信兜底 */
 export async function notifyRecommendation(userId: string, link: string): Promise<void> {
+  const agentName = await getAgentName(userId);
   const payload: NotifyPayload = {
     userId,
     kind: 'recommendation',
-    title: 'Jc 给你带来了一位新的朋友',
+    title: `${agentName}给你带来了一位新的朋友`,
     link,
   };
   await wechatSend(payload);
@@ -54,7 +56,8 @@ export async function notifyRecommendation(userId: string, link: string): Promis
 
 /** 视频链接触达 */
 export async function notifyVideo(userId: string, link: string): Promise<void> {
-  const payload: NotifyPayload = { userId, kind: 'video', title: '你们的视频见面链接', link };
+  const agentName = await getAgentName(userId);
+  const payload: NotifyPayload = { userId, kind: 'video', title: `${agentName}：你们的视频见面链接`, link };
   await wechatSend(payload);
   await smsSend(payload);
 }
