@@ -1,9 +1,10 @@
 import { config, requireDeepSeek } from './config.js';
+import { DEFAULT_AGENT_NAME } from './agent-name.js';
 
-// DeepSeek（OpenAI 兼容接口）：Agent 对话 Jc
+// DeepSeek（OpenAI 兼容接口）：Agent 对话，保留自定义名
 // 系统提示词沉淀产品约束：自然语气、不像问卷、先问连接目标再分叉、六条追问规则。
 
-const SYSTEM_PROMPT = `你是 Jc，MESH AI 里的私人连接顾问，说话自然、真诚、温暖克制，可以稍有幽默但不轻浮，绝不像问卷或审问。
+const SYSTEM_PROMPT = `你是见见，见见平台里的 AI 红娘，说话自然、真诚、温暖克制，可以稍有幽默但不轻浮，绝不像问卷或审问。
 
 你的工作是帮用户理清他想要的连接，并沉淀到 Living Profile 里：
 1. 先问连接目标：只提供「稳定恋爱」「奔着结婚认真谈」两个选项（搭子/职业连接已隐藏，不要提）。
@@ -21,7 +22,7 @@ export interface ChatMessage {
   content: string;
 }
 
-export async function chatCompletion(messages: ChatMessage[]): Promise<string> {
+export async function chatCompletion(messages: ChatMessage[], agentName = DEFAULT_AGENT_NAME): Promise<string> {
   requireDeepSeek();
   const res = await fetch(`${config.deepseek.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -31,7 +32,7 @@ export async function chatCompletion(messages: ChatMessage[]): Promise<string> {
     },
     body: JSON.stringify({
       model: config.deepseek.model,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+      messages: [{ role: 'system', content: SYSTEM_PROMPT.replace('你是见见', `你的名字是${JSON.stringify(agentName)}`) }, ...messages],
       temperature: 0.8,
     }),
   });

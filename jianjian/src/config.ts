@@ -7,6 +7,7 @@ function req(name: string): string {
 }
 
 export const config = {
+  host: process.env.API_HOST ?? '0.0.0.0',
   port: Number(process.env.PORT ?? 8080),
   authMode: process.env.AUTH_MODE ?? 'dev', // dev | otp
   authSecret: process.env.AUTH_SECRET ?? 'dev-secret',

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth.js';
 import { query } from '../db/db.js';
+import { DEFAULT_AGENT_NAME } from '../agent-name.js';
 
 export async function settingsRoutes(app: FastifyInstance) {
   app.get('/api/settings', async (req, reply) => {
@@ -10,7 +11,7 @@ export async function settingsRoutes(app: FastifyInstance) {
       'SELECT agent_name FROM agent_settings WHERE user_id = $1',
       [userId],
     );
-    return { agentName: rows[0]?.agent_name ?? 'Jc' };
+    return { agentName: rows[0]?.agent_name ?? DEFAULT_AGENT_NAME };
   });
 
   app.put('/api/settings', async (req, reply) => {
