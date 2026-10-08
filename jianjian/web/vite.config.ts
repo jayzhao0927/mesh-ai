@@ -1,7 +1,8 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-const api = process.env.API_ORIGIN ?? 'http://localhost:8080';
+const env = (globalThis as typeof globalThis & { process?: { env: Record<string, string | undefined> } }).process?.env;
+const api = env?.API_ORIGIN ?? 'http://localhost:8080';
 
 // 浏览器直接打开 /s/rec/:token 时交给前端页面；接口请求（fetch）仍转发到后端
 const shareRec = {

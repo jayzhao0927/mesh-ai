@@ -1,106 +1,40 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, session } from './api';
+import { api, isDemo, session } from './api';
 import { Bridge } from './pages/Bridge';
 import { Chat } from './pages/Chat';
 import { Login } from './pages/Login';
-import { Me } from './pages/Me';
-import { Recommend } from './pages/Recommend';
 import { SharedRec } from './pages/SharedRec';
-
-type Tab = 'rec' | 'bridge' | 'chat' | 'me';
-
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'chat', label: '聊天' },
-  { key: 'rec', label: '推荐' },
-  { key: 'bridge', label: '搭桥' },
-  { key: 'me', label: '我的' },
-];
-
-function sharedTokenFromPath(): string | null {
-  const m = location.pathname.match(/^\/s\/rec\/([^/]+)$/);
-  return m ? decodeURIComponent(m[1]) : null;
-}
 
 export function App() {
   const [token, setToken] = useState(session.token);
-  const [tab, setTab] = useState<Tab>('chat');
-  const [shared, setShared] = useState<string | null>(sharedTokenFromPath);
-  const [agentName, setAgentName] = useState('');
-
-  const logout = useCallback(() => {
-    session.clear();
-    setToken(null);
-  }, []);
-
+  const [page, setPage] = useState<'chat' | 'bridge'>('chat');
+  const [name, setName] = useState('见见');
+  const [shared, setShared] = useState(() => location.pathname.match(/^\/s\/rec\/([^/]+)$/)?.[1] || null);
+  const logout = useCallback(() => { session.clear(); setToken(null); }, []);
   useEffect(() => {
-    const onPop = () => setShared(sharedTokenFromPath());
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
-
-  const openShared = useCallback((t: string) => {
-    history.pushState(null, '', `/s/rec/${encodeURIComponent(t)}`);
-    setShared(t);
-  }, []);
-
-  const goHome = useCallback(() => {
-    history.pushState(null, '', '/');
-    setShared(null);
-    setTab('rec');
-  }, []);
-
-  useEffect(() => {
-    if (!token) return;
-    api<{ agentName: string }>('GET', '/api/settings')
-      .then((s) => setAgentName(s.agentName))
-      .catch(logout);
+    if (token) api<{ agentName: string }>('GET', '/api/settings').then(s => setName(s.agentName)).catch(logout);
   }, [token, logout]);
-
-  if (!token) {
-    return (
-      <Login
-        hint={shared ? '有人通过见见给你带来了一位可能合拍的人。登录后就能看到 TA，并决定要不要认识。' : undefined}
-        onLogin={(t) => {
-          session.set(t);
-          setToken(t);
-          if (!shared) setTab('chat');
-        }}
-      />
-    );
-  }
-
-  return (
-    <div className="shell">
-      <header className="top">
-        <span className="brand">见见</span>
-        <span className="muted small">{agentName ? `你的 AI 红娘：${agentName}` : ''}</span>
-      </header>
-      <main className="content">
-        {shared ? (
-          <SharedRec token={shared} agentName={agentName} onHome={goHome} />
-        ) : (
-          <>
-            {tab === 'rec' && <Recommend agentName={agentName} onOpenShared={openShared} onGoChat={() => setTab('chat')} />}
-            {tab === 'bridge' && <Bridge />}
-            {tab === 'chat' && <Chat agentName={agentName} onGoRecommend={() => setTab('rec')} />}
-            {tab === 'me' && <Me agentName={agentName} onAgentName={setAgentName} onLogout={logout} />}
-          </>
-        )}
-      </main>
-      <nav className="tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            className={!shared && tab === t.key ? 'tab active' : 'tab'}
-            onClick={() => {
-              if (shared) goHome();
-              setTab(t.key);
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
+  useEffect(() => {
+    const pop = () => setShared(location.pathname.match(/^\/s\/rec\/([^/]+)$/)?.[1] || null);
+    window.addEventListener('popstate', pop);
+    return () => window.removeEventListener('popstate', pop);
+  }, []);
+  return <div className="experience">
+    <aside className="editorial">
+      <a className="wordmark" href={isDemo ? '/try' : '/'}>见见<span>jianjian</span></a>
+      <p className="handwritten">让相遇，慢一点。</p>
+      <h1>先懂你，<br />再遇见你。</h1>
+      <p className="intro">把找人的焦虑交给见见。<br />把真实的你，留给值得认识的人。</p>
+      <div className="paper-art" aria-hidden="true"><span className="sun">✳</span><span className="heart">♡</span><span className="paper-note">认真靠近<br />慢慢喜欢</span><span className="sticker">good things<br />take time</span></div>
+      <p className="manifesto">Website → Message → Meet</p>
+    </aside>
+    <div className="phone-panel">
+      <div className="mode-note">{isDemo ? '样例体验 · 内容预写，仅保存在本机' : '真实 API 联调 · 当前为开发登录'}</div>
+      {!token ? <Login onLogin={t => { session.set(t); setToken(t); }} /> : <>
+        <header className="top"><div className="avatar" aria-hidden="true">见</div><div className="identity"><strong>{name}</strong><span>你的 AI 红娘 · 温柔在线</span></div><button className="icon-button" onClick={logout} aria-label="退出登录">↗</button></header>
+        <nav className="chat-nav" aria-label="主要入口"><button className={page === 'chat' ? 'active' : ''} onClick={() => { setPage('chat'); setShared(null); }}>和{name}聊聊</button><button className={page === 'bridge' ? 'active' : ''} onClick={() => setPage('bridge')}>帮朋友搭桥 ↗</button></nav>
+        <main className="content">{shared ? <SharedRec token={shared} agentName={name} onHome={() => { setShared(null); history.pushState(null, '', isDemo ? '/try' : '/'); }} /> : page === 'bridge' ? <Bridge /> : <Chat agentName={name} onAgentName={setName} />}</main>
+      </>}
     </div>
-  );
+  </div>;
 }
