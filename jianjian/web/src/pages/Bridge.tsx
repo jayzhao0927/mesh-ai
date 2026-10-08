@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type InboxInvite, type MyInvite } from '../api';
+import { api, isDemo, type InboxInvite, type MyInvite } from '../api';
 
 const STATUS: Record<MyInvite['status'], string> = {
   sent: '已发出，对方还没注册',
@@ -62,7 +62,7 @@ export function Bridge() {
               void run(async () => {
                 await api('POST', '/api/invites', { inviteePhone: phone, kind });
                 setPhone('');
-              }, '邀请已发出')
+              }, isDemo ? '样例邀请已记录，没有发送消息' : '邀请已记录，短信网关尚未接通')
             }
           >
             发送

@@ -38,6 +38,7 @@ export function SharedRec({ token, agentName, onHome }: { token: string; agentNa
           reasons={rec.reasons}
           status={rec.status}
           myChoice={rec.myChoice}
+          createdAt={rec.created_at}
           onChanged={load}
         />
       )}

@@ -8,20 +8,23 @@ export class ApiError extends Error {
 }
 
 const TOKEN_KEY = 'jj.token';
+export const isDemo = location.pathname === '/try' || new URLSearchParams(location.search).get('mode') === 'demo';
+const tokenKey = isDemo ? 'jj.try.token' : TOKEN_KEY;
 
 export const session = {
   get token(): string | null {
-    return localStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(tokenKey);
   },
   set(token: string): void {
-    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(tokenKey, token);
   },
   clear(): void {
-    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(tokenKey);
   },
 };
 
 export async function api<T>(method: string, path: string, body?: unknown, token = session.token): Promise<T> {
+  if (isDemo) return (await import('./demo')).demoRequest(method, path, body) as Promise<T>;
   const headers: Record<string, string> = {};
   if (token) headers.authorization = `Bearer ${token}`;
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -93,6 +96,9 @@ export interface Room {
 }
 
 export const FIELD_LABELS: Record<string, string> = {
+  city: '现居城市',
+  age: '年龄',
+  gender: '性别',
   hometown: '籍贯',
   occupation: '职业',
   hobbies: '爱好',
